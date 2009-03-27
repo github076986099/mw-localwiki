@@ -1,0 +1,38 @@
+#!/usr/bin/env python
+
+import sys
+import StringIO
+
+from mwlib.wiki import makewiki
+from mwlib.xhtmlwriter import xhtmlwriter, MWXHTMLWriter
+from mwlib.metabook import make_metabook, make_article
+from mwlib import zipwiki, zipcreator
+
+class FakeStatus(object):
+    # don't give a damn because we can't report progress over http anyway
+    getSubRange = staticmethod(lambda *args: FakeStatus.status_callback)
+    status_callback = staticmethod(lambda *args, **kwords:None)
+    __call__ = status_callback
+
+def render(config, page): # in the style of render
+    """page be unicode"""
+    metabook = make_metabook()
+    metabook['items'].append(make_article(title=page))
+
+    status = FakeStatus()
+
+    env = makewiki(config, metabook=metabook)
+
+    print env.images
+
+    # the env.wiki does not have getParsedArticle unless the following thing is done
+    zip_filename = zipcreator.make_zip_file('/tmp/foo.zip', env)
+    env.wiki = zipwiki.Wiki(zip_filename)
+    # end unless
+
+    #print env.wiki.getRawArticle(page)
+
+    xhtmlwriter(env, output=open('/tmp/einstein.html', 'w'), status_callback=status)
+
+
+render('/home/chrysn/wikipedia/enwiki-20090306-pages-articles.cdb/', 'Albert Einstein')
