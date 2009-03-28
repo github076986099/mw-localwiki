@@ -2,11 +2,16 @@
 
 import sys
 import StringIO
+import urllib
+import BaseHTTPServer
 
 from mwlib.wiki import makewiki
 from mwlib.xhtmlwriter import xhtmlwriter, MWXHTMLWriter
 from mwlib.metabook import make_metabook, make_article
 from mwlib import zipwiki, zipcreator
+
+
+## fake objects required by mwlib compooents
 
 class FakeStatus(object):
     # don't give a damn because we can't report progress over http anyway
@@ -14,25 +19,93 @@ class FakeStatus(object):
     status_callback = staticmethod(lambda *args, **kwords:None)
     __call__ = status_callback
 
+class EmptyImageDB(object):
+    def getURL(self, target, width):
+        return None
+    def getDiskPath(self, name, size):
+        return None
+
+## even worse: monkey patching
+
+from mwlib.parser.nodes import ArticleLink
+def _get_url(self):
+    return '/'+urllib.quote(self.target.encode('utf-8')) # absolute links get you out of AC/DC -> AC/Malcom Young
+def _set_url(self, url):
+    self._url = url
+ArticleLink.url = property(_get_url, _set_url)
+
+## html extraction function
+
 def render(config, page): # in the style of render
     """page be unicode"""
     metabook = make_metabook()
     metabook['items'].append(make_article(title=page))
+    metabook['title'] = page
 
     status = FakeStatus()
 
     env = makewiki(config, metabook=metabook)
 
-    print env.images
+    env.images = EmptyImageDB()
 
-    # the env.wiki does not have getParsedArticle unless the following thing is done
+    # the env.wiki does not have getParsedArticle unless the following thing is done. this unecessarily writes to disk.
     zip_filename = zipcreator.make_zip_file('/tmp/foo.zip', env)
     env.wiki = zipwiki.Wiki(zip_filename)
     # end unless
 
     #print env.wiki.getRawArticle(page)
 
-    xhtmlwriter(env, output=open('/tmp/einstein.html', 'w'), status_callback=status)
+    out = StringIO.StringIO()
+    xhtmlwriter(env, output=out, status_callback=status)
+
+    return out.getvalue()
 
 
-render('/home/chrysn/wikipedia/enwiki-20090306-pages-articles.cdb/', 'Albert Einstein')
+def filter_html(html):
+    html = html.replace("""<style media="screen, projection" type="text/css">\n                        @import "http://en.wikipedia.org/skins-1.5/common/shared.css?156";\n                        @import "http://en.wikipedia.org//skins-1.5/monobook/main.css?156";\n</style>""", '') # no css from the internet
+    return html
+
+
+## http server
+
+class HandleWiki(BaseHTTPServer.BaseHTTPRequestHandler):
+    def do_GET(self):
+        filename = urllib.unquote(self.path[1:]).decode('utf-8')
+
+        if filename:
+            self._serve(filename)
+        else:
+            self._serve_index()
+
+    def _serve(self, filename):
+        try:
+            response = render(self.server.config, filename)
+        except:
+            raise
+            return
+
+        self.send_response(200)
+        self.send_header("Content-type", "text/html")
+        self.end_headers()
+
+        response = filter_html(response)
+
+        self.wfile.write(response)
+
+
+    def _serve_index(self):
+        self.send_response(200)
+        self.send_header("Content-type", "text/html")
+        self.end_headers()
+
+        self.wfile.write("""<h1>wikipedia offline</h1>""")
+
+class WikiServer(BaseHTTPServer.HTTPServer):
+    def __init__(self, address, config):
+        self.config = config
+        BaseHTTPServer.HTTPServer.__init__(self, address, HandleWiki)
+
+
+if __name__ == "__main__":
+    s = WikiServer(('127.0.0.1', 8000), sys.argv[1])
+    s.serve_forever()
