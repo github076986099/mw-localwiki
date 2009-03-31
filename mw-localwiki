@@ -6,11 +6,12 @@ import urllib
 import BaseHTTPServer
 
 from mwlib.wiki import makewiki
-from mwlib.xhtmlwriter import xhtmlwriter, MWXHTMLWriter
+from mwlib.xhtmlwriter import xhtmlwriter
 from mwlib.metabook import make_metabook, make_article
 from mwlib import zipwiki, zipcreator
 
 
+##################################################
 ## fake objects required by mwlib compooents
 
 class FakeStatus(object):
@@ -20,13 +21,16 @@ class FakeStatus(object):
     __call__ = status_callback
 
 class EmptyImageDB(object):
+    # this is intended for offline viewing, no images here
     def getURL(self, target, width):
         return None
     def getDiskPath(self, name, size):
         return None
 
+##################################################
 ## even worse: monkey patching
 
+# yet looking for a better way to hook into link generation from name
 from mwlib.parser.nodes import ArticleLink
 def _get_url(self):
     return '/'+urllib.quote(self.target.encode('utf-8')) # absolute links get you out of AC/DC -> AC/Malcom Young
@@ -34,13 +38,14 @@ def _set_url(self, url):
     self._url = url
 ArticleLink.url = property(_get_url, _set_url)
 
+##################################################
 ## html extraction function
 
-def render(config, page): # in the style of render
+def render(config, page): # simplified from the calls in mw-render
     """page be unicode"""
     metabook = make_metabook()
     metabook['items'].append(make_article(title=page))
-    metabook['title'] = page
+    metabook['title'] = page # redirects or normalization are not done here
 
     status = FakeStatus()
 
@@ -55,23 +60,26 @@ def render(config, page): # in the style of render
 
     #print env.wiki.getRawArticle(page)
 
-    out = StringIO.StringIO()
+    out = StringIO.StringIO() # needs patched xhtmlwriter that accepts file-like objects as well as file names
     xhtmlwriter(env, output=out, status_callback=status)
 
     return out.getvalue()
 
 
 def filter_html(html):
+    # don't fetch style sheets from the web; maybe later provide static simplified style sheet
     html = html.replace("""<style media="screen, projection" type="text/css">\n                        @import "http://en.wikipedia.org/skins-1.5/common/shared.css?156";\n                        @import "http://en.wikipedia.org//skins-1.5/monobook/main.css?156";\n</style>""", '') # no css from the internet
     return html
 
 
+##################################################
 ## http server
 
 class HandleWiki(BaseHTTPServer.BaseHTTPRequestHandler):
     def do_GET(self):
         filename = urllib.unquote(self.path[1:]).decode('utf-8')
 
+        # dispatch based on file name; might later include special pages
         if filename:
             self._serve(filename)
         else:
@@ -81,8 +89,8 @@ class HandleWiki(BaseHTTPServer.BaseHTTPRequestHandler):
         try:
             response = render(self.server.config, filename)
         except:
+            # well, here's a problem: if the article is not found, an empty page is returned and the error passes silently (which is bad)
             raise
-            return
 
         self.send_response(200)
         self.send_header("Content-type", "text/html")
@@ -94,6 +102,7 @@ class HandleWiki(BaseHTTPServer.BaseHTTPRequestHandler):
 
 
     def _serve_index(self):
+        # to be replaced with something more meaningfull
         self.send_response(200)
         self.send_header("Content-type", "text/html")
         self.end_headers()
@@ -107,5 +116,10 @@ class WikiServer(BaseHTTPServer.HTTPServer):
 
 
 if __name__ == "__main__":
+    if '-h' in sys.argv or '--help' in sys.argv or len(sys.argv) != 2:
+        print "usage: mw-localwiki path_to_configuration"
+        sys.exit(1)
+
     s = WikiServer(('127.0.0.1', 8000), sys.argv[1])
+    print "serving on localhost:8000"
     s.serve_forever()
